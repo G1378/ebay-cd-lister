@@ -55,7 +55,9 @@ async function pushSel(){const ids=sel();if(!ids.length)return msg("Select some 
  if($("#pub").checked&&!confirm(`Publish ${ids.length} live listing(s) on eBay?`))return;
  msg(`Pushing ${ids.length}… (about 3s each)`);
  const r=await (await fetch("/api/push",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,publish:$("#pub").checked})})).json();
- msg(`Done: ${r.filter(x=>x.status!="error").length} ok, ${r.filter(x=>x.status=="error").length} failed (hover ⚠ for the reason)`);load()}
+ const failed=r.filter(x=>x.status=="error");
+ const reasons=failed.map(x=>`#${x.id}: ${x.error||"Unknown eBay error"}`).join(" | ");
+ msg(`Done: ${r.length-failed.length} ok, ${failed.length} failed${reasons?`. ${reasons}`:""}`);load()}
 async function up(files){for(const f of files){msg("Identifying "+f.name+"…");const fd=new FormData();fd.append("file",f);
  const r=await fetch("/api/upload",{method:"POST",body:fd});const j=await r.json();
  msg(r.ok?(j.cached?"Already processed that photo (no AI call made)":`Found ${j.added} CDs`):(j.detail||"Error"));}load()}
