@@ -26,8 +26,7 @@ td select option{background:var(--bg)}
   <label>Set price for selected £ <input id="bulk" type="number" step="0.01" style="width:80px"></label>
   <button class="sec" onclick="bulk()">Apply</button>
   <span style="flex:1"></span>
-  <label><input type="checkbox" id="pub"> Publish live (otherwise saves as unpublished offer)</label>
-  <button onclick="pushSel()">Push selected to eBay</button>
+  <button onclick="pushSel()">Publish selected to eBay</button>
 </div>
 <div id="msg"></div>
 <table><thead><tr><th><input type="checkbox" id="all" onchange="toggleAll()"></th><th>Artist</th><th>Title</th><th>Year</th><th>Label</th><th>Cat no</th><th>Photos</th><th>Condition</th><th>£</th><th>Status</th><th></th></tr></thead>
@@ -57,9 +56,9 @@ const sel=()=>[...document.querySelectorAll(".sel:checked")].map(e=>+e.value);
 const toggleAll=()=>document.querySelectorAll(".sel:not(:disabled)").forEach(e=>e.checked=$("#all").checked);
 async function bulk(){const p=+$("#bulk").value;if(!p)return;for(const id of sel())await save(id,"price",p);load()}
 async function pushSel(){const ids=sel();if(!ids.length)return msg("Select some rows first");
- if($("#pub").checked&&!confirm(`Publish ${ids.length} live listing(s) on eBay?`))return;
+ if(!confirm(`Publish ${ids.length} live listing(s) on eBay?`))return;
  msg(`Pushing ${ids.length}… (about 3s each)`);
- const r=await (await fetch("/api/push",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,publish:$("#pub").checked})})).json();
+ const r=await (await fetch("/api/push",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,publish:true})})).json();
  msg(`Done: ${r.filter(x=>x.status!="error").length} ok, ${r.filter(x=>x.status=="error").length} failed (hover ⚠ for the reason)`);load()}
 async function up(files){for(const f of files){msg("Identifying "+f.name+"…");const fd=new FormData();fd.append("file",f);
  const r=await fetch("/api/upload",{method:"POST",body:fd});const j=await r.json();
