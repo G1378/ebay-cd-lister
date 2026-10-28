@@ -7,6 +7,7 @@ from PIL import Image, ImageOps
 from . import ebay
 
 DB = os.environ.get("DB_PATH", "cds.db")
+IMAGE_DIR = os.environ.get("IMAGE_DIR", os.path.join(os.path.dirname(DB) or "data", "covers"))
 MODEL = os.environ.get("AI_MODEL", "openrouter/free")
 PROMPT = ("List every CD visible in this photo (covers, spines or cases). Return ONLY a JSON array, "
           'each item: {"artist":"","title":"","year":null,"label":"","catno":"","genre":"","confidence":0.0}. '
@@ -29,6 +30,9 @@ with db() as c:
       catno TEXT, genre TEXT, notes TEXT, price REAL DEFAULT 3.99, condition TEXT DEFAULT 'USED_VERY_GOOD',
       confidence REAL, status TEXT DEFAULT 'draft', offer_id TEXT, listing_id TEXT, error TEXT);
     """)
+    columns = {row[1] for row in c.execute("PRAGMA table_info(items)")}
+    if "cover_path" not in columns:
+        c.execute("ALTER TABLE items ADD COLUMN cover_path TEXT")
 
 
 def prep(raw: bytes) -> bytes:
@@ -91,6 +95,24 @@ def items():
         return [dict(r) for r in c.execute("SELECT * FROM items ORDER BY id DESC")]
 
 
+@app.post("/api/items/{iid}/cover")
+async def upload_cover(iid: int, file: UploadFile = File(...)):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM items WHERE id=?", (iid,)).fetchone():
+            raise HTTPException(404, "Item not found")
+    try:
+        jpg = prep(await file.read())
+    except Exception as e:
+        raise HTTPException(400, f"Invalid cover image: {e}") from e
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    path = os.path.join(IMAGE_DIR, f"{iid}-{uuid.uuid4().hex}.jpg")
+    with open(path, "wb") as out:
+        out.write(jpg)
+    with db() as c:
+        c.execute("UPDATE items SET cover_path=? WHERE id=?", (path, iid))
+    return {"ok": True}
+
+
 @app.patch("/api/items/{iid}")
 def patch(iid: int, body: dict):
     allowed = {"artist", "title", "year", "label", "catno", "genre", "notes", "price", "condition"}
@@ -120,10 +142,17 @@ def push(body: dict):
             continue
         it = dict(it)
         try:
-            cover = ebay.find_cover(it["artist"], it["title"])
-            time.sleep(1.1)  # MusicBrainz rate limit
-            if not cover:
-                raise RuntimeError("no cover art found")
+            if it.get("cover_path"):
+                try:
+                    with open(it["cover_path"], "rb") as image:
+                        cover = image.read()
+                except OSError as e:
+                    raise RuntimeError("custom cover image is unavailable; upload it again") from e
+            else:
+                cover = ebay.find_cover(it["artist"], it["title"])
+                time.sleep(1.1)  # MusicBrainz rate limit
+                if not cover:
+                    raise RuntimeError("no cover art found — upload your own cover image")
             url = ebay.upload_image(cover)
             offer_id, listing_id = ebay.push(it, url, publish)
             status, err = ("listed" if publish else "offer"), None
