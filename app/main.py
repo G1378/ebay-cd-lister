@@ -8,7 +8,8 @@ from PIL import Image, ImageOps
 from . import ebay
 
 DB = os.environ.get("DB_PATH", "cds.db")
-MODEL = os.environ.get("AI_MODEL", "claude-haiku-5-5")
+MODEL = os.environ.get("AI_MODEL", "anthropic/claude-haiku-4.5")
+AI_BASE = os.environ.get("AI_BASE_URL", "https://openrouter.ai/api/v1")
 PROMPT = ("List every CD visible in this photo (covers, spines or cases). Return ONLY a JSON array, "
           'each item: {"artist":"","title":"","year":null,"label":"","catno":"","genre":"","confidence":0.0}. '
           "Only include text you can actually read or confidently recognise. No guessing, no commentary.")
@@ -47,14 +48,14 @@ def prep(raw: bytes) -> bytes:
 
 
 def identify(jpg: bytes):
-    r = httpx.post("https://api.anthropic.com/v1/messages", timeout=120,
-                   headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"},
+    data_url = "data:image/jpeg;base64," + base64.b64encode(jpg).decode()
+    r = httpx.post(f"{AI_BASE}/chat/completions", timeout=120,
+                   headers={"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]},
                    json={"model": MODEL, "max_tokens": 2000, "messages": [{"role": "user", "content": [
-                       {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                    "data": base64.b64encode(jpg).decode()}},
+                       {"type": "image_url", "image_url": {"url": data_url}},
                        {"type": "text", "text": PROMPT}]}]})
     r.raise_for_status()
-    txt = "".join(b.get("text", "") for b in r.json()["content"])
+    txt = r.json()["choices"][0]["message"]["content"]
     return json.loads(txt[txt.index("["): txt.rindex("]") + 1])
 
 
