@@ -18,7 +18,8 @@ def token():
         data={"grant_type": "refresh_token", "refresh_token": E("EBAY_REFRESH_TOKEN", ""), "scope": SCOPES},
         timeout=30,
     )
-    r.raise_for_status()
+    if r.status_code >= 300:
+        raise RuntimeError(f"eBay OAuth token request ({r.status_code}): {r.text[:500]}")
     j = r.json()
     _tok["v"], _tok["exp"] = j["access_token"], time.time() + j["expires_in"]
     return _tok["v"]
