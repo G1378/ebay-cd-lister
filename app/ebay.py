@@ -92,9 +92,17 @@ def push(it, image_urls, publish):
                                  "paymentPolicyId": E("EBAY_PAYMENT_POLICY"),
                                  "returnPolicyId": E("EBAY_RETURN_POLICY")},
              "pricingSummary": {"price": {"value": f"{it['price']:.2f}", "currency": E("EBAY_CURRENCY", "GBP")}}}
-    r = httpx.post(f"{BASE}/sell/inventory/v1/offer", headers=_h(), json=offer, timeout=30)
-    if r.status_code >= 300: raise RuntimeError(f"offer: {r.text}")
-    offer_id = r.json()["offerId"]
+    mp = E("EBAY_MARKETPLACE", "EBAY_GB")
+    r = httpx.get(f"{BASE}/sell/inventory/v1/offer", headers=_h(), params={"sku": sku, "marketplace_id": mp}, timeout=30)
+    existing = r.json().get("offers", []) if r.status_code == 200 else []
+    if existing:  # retry: update the offer already on eBay instead of creating a duplicate
+        offer_id = existing[0]["offerId"]
+        r = httpx.put(f"{BASE}/sell/inventory/v1/offer/{offer_id}", headers=_h(), json=offer, timeout=30)
+        if r.status_code >= 300: raise RuntimeError(f"update offer: {r.text}")
+    else:
+        r = httpx.post(f"{BASE}/sell/inventory/v1/offer", headers=_h(), json=offer, timeout=30)
+        if r.status_code >= 300: raise RuntimeError(f"offer: {r.text}")
+        offer_id = r.json()["offerId"]
     listing_id = None
     if publish:
         r = httpx.post(f"{BASE}/sell/inventory/v1/offer/{offer_id}/publish", headers=_h(), timeout=30)
