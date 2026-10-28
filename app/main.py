@@ -1,5 +1,6 @@
-import os, io, json, base64, hashlib, sqlite3, uuid, time
+import os, io, json, base64, hashlib, sqlite3, uuid, time, glob
 import httpx
+from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -7,13 +8,18 @@ from PIL import Image, ImageOps
 from . import ebay
 
 DB = os.environ.get("DB_PATH", "cds.db")
-IMAGE_DIR = os.environ.get("IMAGE_DIR", os.path.join(os.path.dirname(DB) or "data", "covers"))
-MODEL = os.environ.get("AI_MODEL", "openrouter/free")
+MODEL = os.environ.get("AI_MODEL", "claude-haiku-5-5")
 PROMPT = ("List every CD visible in this photo (covers, spines or cases). Return ONLY a JSON array, "
           'each item: {"artist":"","title":"","year":null,"label":"","catno":"","genre":"","confidence":0.0}. '
           "Only include text you can actually read or confidently recognise. No guessing, no commentary.")
 
 app = FastAPI()
+IMG_DIR = os.path.join(os.path.dirname(DB) or ".", "img")
+os.makedirs(IMG_DIR, exist_ok=True)
+
+
+def img_files(iid):
+    return sorted(glob.glob(os.path.join(IMG_DIR, f"{iid}_*.jpg")))
 
 
 def db():
@@ -30,9 +36,6 @@ with db() as c:
       catno TEXT, genre TEXT, notes TEXT, price REAL DEFAULT 3.99, condition TEXT DEFAULT 'USED_VERY_GOOD',
       confidence REAL, status TEXT DEFAULT 'draft', offer_id TEXT, listing_id TEXT, error TEXT);
     """)
-    columns = {row[1] for row in c.execute("PRAGMA table_info(items)")}
-    if "cover_path" not in columns:
-        c.execute("ALTER TABLE items ADD COLUMN cover_path TEXT")
 
 
 def prep(raw: bytes) -> bytes:
@@ -44,27 +47,15 @@ def prep(raw: bytes) -> bytes:
 
 
 def identify(jpg: bytes):
-    r = httpx.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        timeout=120,
-        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
-        json={"model": MODEL, "max_tokens": 2000, "reasoning": {"enabled": False},
-              "messages": [{"role": "user", "content": [
-                  {"type": "text", "text": PROMPT},
-                  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()}},
-              ]}]},
-    )
+    r = httpx.post("https://api.anthropic.com/v1/messages", timeout=120,
+                   headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"},
+                   json={"model": MODEL, "max_tokens": 2000, "messages": [{"role": "user", "content": [
+                       {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                    "data": base64.b64encode(jpg).decode()}},
+                       {"type": "text", "text": PROMPT}]}]})
     r.raise_for_status()
-    response = r.json()
-    try:
-        txt = response["choices"][0]["message"]["content"]
-        if isinstance(txt, list):
-            txt = "".join(part.get("text", "") for part in txt if isinstance(part, dict))
-        if not isinstance(txt, str) or not txt.strip():
-            raise ValueError("no text content")
-        return json.loads(txt[txt.index("["): txt.rindex("]") + 1])
-    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
-        raise RuntimeError("OpenRouter returned no usable JSON array; retry the upload or select a named vision model.") from e
+    txt = "".join(b.get("text", "") for b in r.json()["content"])
+    return json.loads(txt[txt.index("["): txt.rindex("]") + 1])
 
 
 @app.post("/api/upload")
@@ -92,25 +83,10 @@ async def upload(file: UploadFile = File(...)):
 @app.get("/api/items")
 def items():
     with db() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM items ORDER BY id DESC")]
-
-
-@app.post("/api/items/{iid}/cover")
-async def upload_cover(iid: int, file: UploadFile = File(...)):
-    with db() as c:
-        if not c.execute("SELECT 1 FROM items WHERE id=?", (iid,)).fetchone():
-            raise HTTPException(404, "Item not found")
-    try:
-        jpg = prep(await file.read())
-    except Exception as e:
-        raise HTTPException(400, f"Invalid cover image: {e}") from e
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-    path = os.path.join(IMAGE_DIR, f"{iid}-{uuid.uuid4().hex}.jpg")
-    with open(path, "wb") as out:
-        out.write(jpg)
-    with db() as c:
-        c.execute("UPDATE items SET cover_path=? WHERE id=?", (path, iid))
-    return {"ok": True}
+        rows = [dict(r) for r in c.execute("SELECT * FROM items ORDER BY id DESC")]
+    for r in rows:
+        r["photos"] = len(img_files(r["id"]))
+    return rows
 
 
 @app.patch("/api/items/{iid}")
@@ -128,7 +104,27 @@ def patch(iid: int, body: dict):
 def delete(iid: int):
     with db() as c:
         c.execute("DELETE FROM items WHERE id=?", (iid,))
+    for f in img_files(iid):
+        os.remove(f)
     return {"ok": True}
+
+
+@app.post("/api/items/{iid}/images")
+async def add_images(iid: int, files: List[UploadFile] = File(...)):
+    for f in files:
+        if len(img_files(iid)) >= 12:
+            break
+        jpg = prep(await f.read())
+        with open(os.path.join(IMG_DIR, f"{iid}_{uuid.uuid4().hex[:8]}.jpg"), "wb") as o:
+            o.write(jpg)
+    return {"photos": len(img_files(iid))}
+
+
+@app.delete("/api/items/{iid}/images")
+def clear_images(iid: int):
+    for f in img_files(iid):
+        os.remove(f)
+    return {"photos": 0}
 
 
 @app.post("/api/push")
@@ -142,19 +138,15 @@ def push(body: dict):
             continue
         it = dict(it)
         try:
-            if it.get("cover_path"):
-                try:
-                    with open(it["cover_path"], "rb") as image:
-                        cover = image.read()
-                except OSError as e:
-                    raise RuntimeError("custom cover image is unavailable; upload it again") from e
-            else:
+            datas = [open(f, "rb").read() for f in img_files(iid)]
+            if not datas:  # fall back to cover art
                 cover = ebay.find_cover(it["artist"], it["title"])
                 time.sleep(1.1)  # MusicBrainz rate limit
                 if not cover:
-                    raise RuntimeError("no cover art found — upload your own cover image")
-            url = ebay.upload_image(cover)
-            offer_id, listing_id = ebay.push(it, url, publish)
+                    raise RuntimeError("no photos attached and no cover art found")
+                datas = [cover]
+            urls = [ebay.upload_image(d) for d in datas]
+            offer_id, listing_id = ebay.push(it, urls, publish)
             status, err = ("listed" if publish else "offer"), None
         except Exception as e:
             offer_id = listing_id = None

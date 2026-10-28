@@ -2,6 +2,10 @@ import os, time, httpx
 
 E = os.environ.get
 BASE = "https://api.ebay.com"
+SCOPES = " ".join([
+    "https://api.ebay.com/oauth/api_scope/sell.inventory",
+    "https://api.ebay.com/oauth/api_scope/sell.account",
+])
 _tok = {"v": None, "exp": 0}
 
 
@@ -11,12 +15,10 @@ def token():
     r = httpx.post(
         f"{BASE}/identity/v1/oauth2/token",
         auth=(E("EBAY_CLIENT_ID", ""), E("EBAY_CLIENT_SECRET", "")),
-        # Omitting scope reuses the scopes granted when this refresh token was created.
         data={"grant_type": "refresh_token", "refresh_token": E("EBAY_REFRESH_TOKEN", "")},
         timeout=30,
     )
-    if r.status_code >= 300:
-        raise RuntimeError(f"eBay OAuth token request ({r.status_code}): {r.text[:500]}")
+    r.raise_for_status()
     j = r.json()
     _tok["v"], _tok["exp"] = j["access_token"], time.time() + j["expires_in"]
     return _tok["v"]
@@ -68,7 +70,7 @@ def make_title(it):
     return t[:80]
 
 
-def push(it, image_url, publish):
+def push(it, image_urls, publish):
     sku = it["sku"]
     desc = (f"<p><b>{it['artist']} - {it['title']}</b></p>"
             f"<p>Format: CD<br>{('Label: ' + it['label'] + '<br>') if it.get('label') else ''}"
@@ -79,7 +81,7 @@ def push(it, image_url, publish):
     if it.get("genre"): aspects["Genre"] = [it["genre"]]
     if it.get("label"): aspects["Record Label"] = [it["label"]]
     item = {"availability": {"shipToLocationAvailability": {"quantity": 1}}, "condition": it["condition"],
-            "product": {"title": make_title(it), "description": desc, "aspects": aspects, "imageUrls": [image_url]}}
+            "product": {"title": make_title(it), "description": desc, "aspects": aspects, "imageUrls": image_urls}}
     r = httpx.put(f"{BASE}/sell/inventory/v1/inventory_item/{sku}", headers=_h(), json=item, timeout=30)
     if r.status_code >= 300: raise RuntimeError(f"inventory_item: {r.text}")
 
