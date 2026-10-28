@@ -7,7 +7,7 @@ from PIL import Image, ImageOps
 from . import ebay
 
 DB = os.environ.get("DB_PATH", "cds.db")
-MODEL = os.environ.get("AI_MODEL", "google/gemini-3-flash-preview")
+MODEL = os.environ.get("AI_MODEL", "openrouter/free")
 PROMPT = ("List every CD visible in this photo (covers, spines or cases). Return ONLY a JSON array, "
           'each item: {"artist":"","title":"","year":null,"label":"","catno":"","genre":"","confidence":0.0}. '
           "Only include text you can actually read or confidently recognise. No guessing, no commentary.")
@@ -44,15 +44,23 @@ def identify(jpg: bytes):
         "https://openrouter.ai/api/v1/chat/completions",
         timeout=120,
         headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
-        json={"model": MODEL, "max_tokens": 2000,
+        json={"model": MODEL, "max_tokens": 2000, "reasoning": {"enabled": False},
               "messages": [{"role": "user", "content": [
                   {"type": "text", "text": PROMPT},
                   {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()}},
               ]}]},
     )
     r.raise_for_status()
-    txt = r.json()["choices"][0]["message"]["content"]
-    return json.loads(txt[txt.index("["): txt.rindex("]") + 1])
+    response = r.json()
+    try:
+        txt = response["choices"][0]["message"]["content"]
+        if isinstance(txt, list):
+            txt = "".join(part.get("text", "") for part in txt if isinstance(part, dict))
+        if not isinstance(txt, str) or not txt.strip():
+            raise ValueError("no text content")
+        return json.loads(txt[txt.index("["): txt.rindex("]") + 1])
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
+        raise RuntimeError("OpenRouter returned no usable JSON array; retry the upload or select a named vision model.") from e
 
 
 @app.post("/api/upload")
