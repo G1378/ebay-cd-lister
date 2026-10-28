@@ -2,10 +2,6 @@ import os, time, httpx
 
 E = os.environ.get
 BASE = "https://api.ebay.com"
-SCOPES = " ".join([
-    "https://api.ebay.com/oauth/api_scope/sell.inventory",
-    "https://api.ebay.com/oauth/api_scope/sell.account",
-])
 _tok = {"v": None, "exp": 0}
 
 
@@ -15,7 +11,8 @@ def token():
     r = httpx.post(
         f"{BASE}/identity/v1/oauth2/token",
         auth=(E("EBAY_CLIENT_ID", ""), E("EBAY_CLIENT_SECRET", "")),
-        data={"grant_type": "refresh_token", "refresh_token": E("EBAY_REFRESH_TOKEN", ""), "scope": SCOPES},
+        # Omitting scope reuses the scopes granted when this refresh token was created.
+        data={"grant_type": "refresh_token", "refresh_token": E("EBAY_REFRESH_TOKEN", "")},
         timeout=30,
     )
     if r.status_code >= 300:
