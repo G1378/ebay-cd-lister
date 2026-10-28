@@ -51,11 +51,20 @@ def identify(jpg: bytes):
     data_url = "data:image/jpeg;base64," + base64.b64encode(jpg).decode()
     r = httpx.post(f"{AI_BASE}/chat/completions", timeout=120,
                    headers={"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]},
-                   json={"model": MODEL, "max_tokens": 2000, "messages": [{"role": "user", "content": [
+                   json={"model": MODEL, "max_tokens": 4000, "messages": [{"role": "user", "content": [
                        {"type": "image_url", "image_url": {"url": data_url}},
                        {"type": "text", "text": PROMPT}]}]})
     r.raise_for_status()
-    txt = r.json()["choices"][0]["message"]["content"]
+    j = r.json()
+    if "choices" not in j:
+        raise RuntimeError(f"OpenRouter error: {str(j)[:300]}")
+    ch = j["choices"][0]
+    txt = ch["message"].get("content") or ""
+    if isinstance(txt, list):  # some providers return content parts
+        txt = "".join(p.get("text", "") for p in txt)
+    if "[" not in txt or "]" not in txt:
+        raise RuntimeError(f"model returned no list (finish={ch.get('finish_reason')}, model={j.get('model')}): "
+                           f"{txt[:200] or '<empty>'}")
     return json.loads(txt[txt.index("["): txt.rindex("]") + 1])
 
 
