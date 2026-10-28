@@ -139,7 +139,7 @@ def clear_images(iid: int):
 
 @app.post("/api/push")
 def push(body: dict):
-    publish = bool(body.get("publish"))
+    publish = True
     results = []
     for iid in body.get("ids", []):
         with db() as c:
